@@ -1,0 +1,7 @@
+git clone https://github.com/apache/spark.git 下载项目
+git remote add origin 你复制的地址
+     git init
+先 git status 
+    git add .
+   git commit -m "111.txt"
+git push  git push -u origin master如果第一次用这个

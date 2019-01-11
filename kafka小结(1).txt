@@ -1,0 +1,83 @@
+﻿一. 基本命令 
+
+1.安装zk集群，启动zk
+
+2.config/server.properties
+添加zk地址:zookeeper.connect=192.168.111.100:2181,192.168.111.101:2181,192.168.111.102:2181
+修改broker.id(唯一的)：broker.id=0
+
+zkServer.sh  start
+zkServer.sh  status
+zkServer.sh  stop
+
+	
+3.启动, 必须每个kafka节点都手动启动 （后台启动） 
+nohup bin/kafka-server-start.sh  config/server.properties > /dev/null 2>&1 &
+
+
+	
+4.创建topic
+bin/kafka-topics.sh --create --zookeeper h101:2181,h102:2181,h103:2181  --replication-factor 3 --partitions 2 --topic test
+
+创建了一个topic 叫 test
+这个test 有 3个partition，在kafka里面弄多个partition的作用，就是增加并发的读写能力。
+因为在一个kafka里面，一个partition只能被一个producer 写入，被一个consumer读取 
+
+每个partition有3个副本
+一个partition弄多个副本的目的，为了容错，但是如果副本的数据超过broker的数量，那么就说明肯定有某些broker有相同的partition的多个副本，这不符合容错的
+的标准.
+
+
+	
+5.列出所有topic  
+bin/kafka-topics.sh --list --zookeeper localhost:2181
+
+6.向topic中写入数据
+bin/kafka-console-producer.sh --broker-list 192.168.111.100:9092,192.168.111.101:9092,192.168.111.102:9092 --topic test1801
+
+7.消费数据
+bin/kafka-console-consumer.sh --zookeeper localhost:2181 --topic test --from-beginning
+kafka很重要的就是一个消息的偏移量，标记了你需要消费的位置，下次消费的时候，从下一个地方开始消费
+kafka 消费者,有低阶api，高阶api
+如果是低阶api，那么这个偏移量你开发人员值手动保存，一般都是保存在zookeeper，spark 如果读取kafka 基于receiver就是高阶api
+如果是高阶api, 就自动保存，还有一种基于direct 低阶挨批
+
+
+
+8.查看指定topic的详情
+bin/kafka-topics.sh --describe --zookeeper localhost:2181 --topic test2222
+
+Topic:test      PartitionCount:3        ReplicationFactor:3     Configs:
+        Topic: test     Partition: 0    Leader: 0       Replicas: 0,2,1 Isr: 0,2,1
+        Topic: test     Partition: 1    Leader: 1       Replicas: 1,0,2 Isr: 1,0,2
+        Topic: test     Partition: 2    Leader: 2       Replicas: 2,1,0 Isr: 2,1,0
+[hadoop@huawei kafka_2.11-0.9.0.1]$ 
+
+
+bin/kafka-topics.sh --create --zookeeper 192.168.111.100:2181,192.168.111.101:2181,192.168.111.102:2181  --replication-factor 3 --partitions 2 --topic test2222
+[hadoop@huawei kafka_2.11-0.9.0.1]$ bin/kafka-topics.sh --describe --zookeeper localhost:2181 --topic test2222
+Topic:test2222  PartitionCount:2        ReplicationFactor:3     Configs:
+        Topic: test2222 Partition: 0    Leader: 1       Replicas: 1,0,2 Isr: 1,0,2
+        Topic: test2222 Partition: 1    Leader: 2       Replicas: 2,1,0 Isr: 2,1,0
+
+每个partition 有多个副本，这些副本中，它会选取一个leader，这个leader 就是负责读写的，其他的follower 用来做数据的备份 
+在选举leader的时候，尽量把leader分散，这样有利于负载均衡...
+		
+
+https://www.cnblogs.com/liuming1992/p/6423458.html
+
+
+报错：
+ERROR kafka.admin.AdminOperationException: replication factor: 3 larger than available brokers: 2
+        at kafka.admin.AdminUtils$.assignReplicasToBrokers(AdminUtils.scala:77)
+        at kafka.admin.AdminUtils$.createTopic(AdminUtils.scala:236)
+        at kafka.admin.TopicCommand$.createTopic(TopicCommand.scala:105)
+        at kafka.admin.TopicCommand$.main(TopicCommand.scala:60)
+        at kafka.admin.TopicCommand.main(TopicCommand.scala)
+		
+为什么？？
+我之前kafka集群里面，只启动2个节点，而我创建的kafka的topic 一个partition有3个副本...
+而在kafka中，你的partition的副本的数据不能超过节点数...
+
+
+

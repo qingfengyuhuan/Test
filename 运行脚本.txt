@@ -1,0 +1,465 @@
+﻿1、启动flume采集数据
+./bin/flume-ng agent --conf conf --conf-file ./conf/myconf/spoolDir-mem-hdfs.conf --name a1 -Dflume.root.logger=INFO,console
+
+2. 清洗数据 预处理
+hadoop jar  /opt/rh/project1801-2.0.jar com.beicai.project1801.UpdateUser.count.DayUpdateUserCountDriver job6 \
+/project1801out2020/19-01-02/allVersion  /project1801out2020/19-01-02/version    /project1801out2023/19-01-02/
+
+hadoop jar /opt/rh/projectTest-2.0.jar  com.beicai.projectTest.activeUsers.count.DayActiveUserCountDriver \
+activeUserCount  \
+/projectTextout2019/19-01-02/city \
+/projectTextout2019/19-01-02/versionAndcity \
+/projectTextout2019/19-01-02/all \
+/projectTextout2019/19-01-02/version \
+/hadoopProjectText/activeUser/count/19-01-01
+
+hadoop jar /opt/rh/project1801-2.0.jar  com.beicai.project1801.activeUsers.count.DayActiveUserCountDriver \
+ activeUserCount  \
+/projectTextout2019/19-01-02/city \
+/projectTextout2019/19-01-02/versionAndcity \
+/projectTextout2019/19-01-02/all \
+/projectTextout2019/19-01-02/version \
+ /hadoopProjectTextOUT/activeUser/count/18-12-28
+
+
+dfs debug recoverLease -path /hadoopProject1706/DataPreprocess_out/18-05-02/android/bc1706-m-00000 -retries 10
+
+1.1  运行去重的MR程序 
+hadoop jar /home/hadoop/jars/HadoopProject1612A-2.0.jar \
+cn.beicai.HadoopProject1612.newUsers.dis.DayNewUsersDisDriver \
+20180228 day_new_users_dis \
+/beicai1610/data_pretreament_out/17-08-24/android \
+/beicai1610/data_pretreament_out/17-08-24/ios \
+/hoop1609/day_new_users_dis_out_copy05
+
+
+运行完毕：
+hadoop jar /home/hadoop/jars/HadoopProject1706-0.0.1-SNAPSHOT.jar \
+cn.beicai.HadoopProject1706.task.dis.DayNewUserDisDriver \
+20180504 day_new_users_dis \
+/hadoopProject1706/DataPreprocess_out/18-05-04 \
+/hadoopProject1706/day_new_users_dis_out05
+
+
+hadoop jar /home/hadoop/jars/HadoopProject1704.jar \
+cn.beicai.HadoopProject1704.dataProcess.newuser.dis.DayNewUserDriver \
+20180504 day_new_users_dis \
+/hadoopProject1706/DataPreprocess_out/18-05-04 \
+/hadoopProject1706/day_new_users_dis_out04
+
+1.2 目前创建每日的去重数据表 ：day_users_logs_dis
+create external table hadoop1709.day_users_logs_dis(
+day String,
+app_token String,
+user_id String,
+commit_time String,
+version  String,
+channel String,
+city String
+) partitioned by(DATEPART String)
+ROW FORMAT  DELIMITED FIELDS TERMINATED BY '\u0001'
+STORED AS TEXTFILE;
+
+2. 给这个表导入数据：
+load data inpath '/hadoopProject1709/newUsersDis/18-08-07/part-r-00000' into table day_users_logs_dis partition(DATEPART=20180807);
+3. 创建历史表：
+create external table hadoop1709.history_users_infos (
+day String,
+app_token String,
+user_id String
+)partitioned by (datepart String)
+row format delimited fields
+terminated by '\u0001'
+stored as TextFile;
+
+4.创建一个新增用户的明细表：
+create external table hadoop1709.day_new_users_logs_infos(
+day String,
+app_token String,
+user_id String,
+version String,
+channel String,
+city String)
+partitioned by (datepart String)
+row format delimited fields
+terminated by '\u0001'
+stored as TextFile;
+
+
+
+5.运行匹配逻辑 
+insert into table day_new_users_logs_infos partition(datepart='20180807')
+select 
+a.day,a.app_token,a.user_id,a.version,a.channel,a.city
+from 
+(select day,app_token,user_id,version,channel,city,concat(app_token,user_id) as au from day_users_logs_dis where datepart='20180807') as a
+left join
+(select day,app_token,user_id,concat(app_token,user_id) as au from history_users_infos) as b
+on a.au= b.au
+where b.au is null;
+
+6.往历史库里面回填数据
+insert into table hadoop1709.history_users_infos 
+partition(datepart = '20180807')
+select day,app_token,user_id from hadoop1709.day_new_users_logs_infos where datepart = '20180807';
+
+//前面算的全部都是明细数据，接下来要计算汇总逻辑了
+为什么需要汇总？？
+看数据的人关注的汇总数据
+
+维度：（渠道的个数+1）*（版本的个数+1）*（地区的个数+1）
+
+(具体渠道个数 +所有渠道）* （具体版本个数 + 所有版本） * （具体地区的个数+所有地区）
+
+编码的时候，我们只需要写8个维度就可以了；
+
+某个应用 在 某个具体版本 的 某个渠道 对应的 某个地区 有多少新增用户
+   
+具体版本 具体渠道  具体地区  1
+
+具体版本 具体渠道  所有地区  1
+具体版本 所有渠道  具体城市  1
+具体版本 所有渠道  所有城市  1
+所有版本 具体渠道  具体地区  1
+所有版本 具体渠道  所有地区  1
+所有版本 所有渠道  具体城市  1
+
+所有版本 所有渠道  所有城市  1
+ 
+
+渠道（具体渠道 ，所有渠道） 2
+城市（具体城市 ，所有城市） 2
+版本（具体版本 ，所有版本）2
+ 
+假设你有 n个维度 ，每个维度分别有（m1，m2,,,,mn）
+
+m1 * m2 * m3 ....mm
+
+2 * 2 * 2 = 8种 
+
+
+mapReduce 数据是从新增用户的明细数据里面来：
+
+map:
+app_token
+version
+channel
+city
+在map里面，我们得把上述的8个维度，写8个key出来 
+
+老周 全民出击 2018年5月3日12点 1.5版本 应用宝 北京 ，一条新增用户的数据   key：1.5版本 应用宝 北京  
+老王 全民出击 2018年5月3日12点 1.6版本 应用宝 上海 ，一条新增用户的数据   key：1.6版本 应用宝 上海 
+
+version为例 ：表示具体版本：
+
+所有版本为例： 没有所有版本：
+
+假设我需求变简单了，某个应用 所有版本 所有渠道  所有城市 有多少新增用户，怎么算？？？用hive的sql怎么实现？？
+查询表 day_new_users_logs_infos 
+create external table hadoop1709.day_new_users_logs_infos(
+day String,
+app_token String,
+user_id String,
+version String,
+channel String,
+city String)
+partitioned by (datepart String)...
+
+select 
+app_token,
+count(*)
+from day_new_users_logs_infos
+group by app_token;  变成mr怎么写？？
+在key里面如果没有这个维度的字段就表示这个维度的所有情况
+
+假设有个这样的表 北财
+
+stuid  classid sex
+
+计算每个专业 每个班级 男女的人数
+key：classid sex
+计算每个专业 每个班级 所有性别的人数
+key：classid
+如果写mr：
+classid 这样写没有问题 
+classid + "ALL"  这写有没有问题
+
+为什么要在所有的情况加一个字符串标记呢？？ 因为 是为了保证字段的长度一致，然后建表，能够导入到hive里面去
+
+计数都是wordCount ,关键是在map程序里面把key设计出来 
+
+问题：
+
+需要 userid吗？ 不需要，因为这是汇总数据
+
+
+
+
+
+
+
+7.接下来就是汇总的业务逻辑
+
+7.1 为什么需要汇总
+目前我们已经有了一份每日的新增用户信息了，数据如下：
+20171129BEICAI_Im.ff:9d:08:26:88:5814733986894781.7appstore淮北市
+20171129BEICAI_Im.ff:9d:bd:9e:90:8714733958631091.4appstore赣州市
+20171129BEICAI_Im.ff:a1:b8:59:5d:2414733968189522.3appstore昆明市
+20171129BEICAI_Im.ff:a4:68:06:65:3a14733887768693.0appstore杭州市
+
+
+8.创建汇总数据对应表：
+create external table hadoop1709.day_new_users_counts(
+day String,
+app_token String,
+version String,
+channel String,
+city String,
+new_users_count int
+) partitioned by (datepart String)
+row format delimited fields 
+terminated by '\u0001'
+stored as TextFile;
+
+
+8.1 运行汇总的MR程序：
+hadoop jar /home/hadoop/jars/Project1701-2.0.jar cn.beicai.Project1701.newUsers.count.DayNewUsersCountDirver \
+dayNewUsersCounts /user/hive/warehouse/beicai1701.db/day_new_users_logs_infos/datepart=20171129 /hadoop1701/day_new_users_counts_out
+
+8.2 把上述MR运行结果导入到创建的hive汇总表中
+
+load data inpath '/hadoopProject1709/newUserCount/18-08-07/part-r-00000' into table hadoop1709.day_new_users_counts partition(DATEPART=20180807);
+
+
+*****************************************************************************************
+用hive 的sql语句实现方式：
+
+1,某一天某个应用，哪个城市，哪个渠道，哪个版本 有多少人
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,version,channel,city,count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token,version,channel,city
+
+2,某一天某个应用，哪个城市，哪个渠道，所有版本有多少人
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,'ALL',channel,city,count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token,channel,city
+
+3,某一天某个应用，哪个城市，所有渠道，哪个版本有多少人
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,version,'ALL',city,count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token,city,version
+
+
+4.某一天某个应用，哪个城市，所有渠道，所有版本有多少人
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,'ALL','ALL',city,count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token,city;
+
+5,某一天某个应用，所有城市，哪个渠道，哪个版本 有多少人
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,version,channel,'ALL',count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token,version,channel;
+
+6,某一天某个应用，所有城市，哪个渠道，所有版本有多少人
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,'ALL',channel,'ALL',count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token,channel;
+
+7,某一天某个应用，所有城市，所有渠道，哪个版本有多少人
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,version,'ALL','ALL',count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token,version;
+
+8.某一天某个应用，所有城市，所有渠道，所有版本有多少人
+
+insert into table day_new_users_counts partition (datepart='20180807')
+select day,app_token,'ALL','ALL','ALL',count(*)
+from 
+day_new_users_logs_infos 
+group by day,app_token;
+
+*****************************************************************************************
+
+外包公司： 1万4工资 外包到 腾讯  
+			2.5-3万 一个月  
+	
+9 做结果验证：
+这份是随机的从计算的结果中获取的
+
+
+20180808        BEICAI_A        1.2     1003    娄底市  147     20180807
+20180808        BEICAI_A        1.2     1003    安阳市  147     20180807
+20180808        BEICAI_A        1.2     1003    抚州市  151     20180807
+20180808        BEICAI_A        1.2     1003    昆明市  140     20180807
+20180808        BEICAI_A        1.2     1003    杭州市  295     20180807
+
+验证这个结果对不对？？？
+
+mr sql 算出来的，这是一种方案
+
+20180808        BEICAI_A        1.2     1003    娄底市  147
+20180808BEICAI_I3.0ALLALL6030
+
+
+select
+count(*) 
+from
+hadoop1709.day_new_users_logs_infos
+where day = '20180808' and app_token = 'BEICAI_A' and version = '1.2' and channel = '1003' and  city = '娄底市';
+
+select
+count(*) 
+from
+hadoop1709.day_new_users_logs_infos
+where day = '20180808' and app_token = 'BEICAI_I' and version = '3.0';
+
+
+
+10.把这份数据导入到mysql中
+后端的数据都是从数据库里面获取的，需要把hive的数据导入到mysql中去，用sqoop导入
+
+
+11 sqoop的讲解
+
+12.把hive里面的数据导入到mysql
+12.1 在mysql创建一个对应的表
+create table day_ative_users_counts_1701 (
+day CHAR(32) NOT NULL,
+app_token CHAR(32) NOT NULL,
+version CHAR(64) NOT NULL,
+channel CHAR(32) NOT NULL,
+city CHAR(20) NOT NULL,
+ACTIVE_COUNTS CHAR(64) DEFAULT NULL,
+## PRIMARY KEY (day,app_token,version,channel,city)
+)ENGINE=MyISAM DEFAULT CHARSET=utf8;
+
+12.2 执行导出命令：
+bin/sqoop  export \
+--connect "jdbc:mysql://huawei:3306/myproject?useUnicode=true&characterEncoding=utf-8" \
+--username root \
+--password root \
+--table day_ative_users_counts_1701 \
+--export-dir /user/hive/warehouse/beicai1701.db/day_new_users_counts/datepart=20171129 \
+--input-fields-terminated-by '\001'
+
+接下来：讲shell脚本和流程化控制 
+
+
+************************************************************************************************
+************************************************************************************************
+************************************************************************************************
+
+活跃用户 
+1. 执行活跃用户的去重逻辑（MR）
+
+数据从预处理之后的数据里面获取：
+/hadoop1701/DataPreprocess_out/17-11-29
+
+hadoop jar /home/hadoop/jars/Project1701-2.0.jar cn.beicai.Project1701.activeUsers.dis.DayActiveUsersDisDirver \
+20171129 dayActiveUsersDis /hadoop1701/DataPreprocess_out/17-11-29 /hadoop1701/day_active_users_dis
+
+2. 创建一份活跃用户的明细表
+
+create external table beicai1701.DAY_ACTIVE_USERS_LOGS_INFOS(
+DAY String,
+APP_TOKEN String,
+USER_ID String,
+VERSION String,
+CHANNEL String,
+CITY String
+) PARTITIONED BY (DATEPART String)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\u0001'
+stored as TextFile 
+location '/user/hive/warehouse/beicai1701.db/day_active_users_infos';
+
+insert into table beicai1701.DAY_ACTIVE_USERS_LOGS_INFOS select * from beicai1609.DAY_ACTIVE_USERS_LOGS_INFOS where datepart='20171129' limit 10;
+
+运行汇总的MR:
+
+hadoop jar /home/hadoop/jars/Project1701-2.0.jar cn.beicai.Project1701.activeUsers.count.DayActiveUsersCountDriver \
+20171129 \
+dayActiveUsersCount \
+/hadoop1701/day_active_users_dis/allVersion \
+/beicai1609/hive_houses/beicai1609.db/day_active_users_infos/datepart=20171129 \
+/hadoop1701/day_active_users_counts_out
+
+
+
+
+
+hive -e "
+load  data inpath '/beicai1609/day_active_dis_out/versions' 
+into table beicai1609.DAY_ACTIVE_USERS_LOGS_INFOS partition (datepart=$1);
+"
+
+
+// 升级用户
+// 获取到升级用户的明细数据（dis）
+hadoop jar /home/hadoop/jars/Project1701-2.0.jar cn.beicai.Project1701.updateUsers.dis.DayUpdateUsersDisDriver \
+20171129 \
+dayupdateUsersDis \
+/hadoop1701/DataPreprocess_out/17-11-29 \
+/hadoop1701/day_update_users_dis
+
+// 运行版本轨迹的聚合MR
+hadoop jar /home/hadoop/jars/Project1701-2.0.jar cn.beicai.Project1701.updateUsers.count.DayUpdateUsersSourceCountDriver \
+dayupdateHiscount \
+/hadoop1701/day_update_users_dis/userStepVersion \
+/hadoop1701/day_update_users_his_count
+
+
+// 运行升级用户的聚合逻辑 
+之前的写法中，没有考虑具体的上个版本情况，所有把这两个map写入到一个reduce，当前的reduce
+hadoop jar /home/hadoop/jars/Project1701-2.0.jar cn.beicai.Project1701.updateUsers.count.DayUpdateUsersUsersDriver \
+dayupdateUsersCount \
+/hadoop1701/day_update_users_dis/allVersionUpdate \
+/hadoop1701/day_update_users_dis/versionUpdate \
+/hadoop1701/day_update_users_count
+
+
+常用的命令：
+1.删除分区表
+drop table day_users_logs_dis01;
+
+2.删除分区表里面的某个分区
+alter table day_users_logs_dis01 drop partition(datepart='20170824');
+
+3.向一个分区表如何插入数据
+insert into table beicai1701.history_users_infos 
+partition(datepart = 20171129)
+select day,app_token,user_id from beicai1701.day_new_users_logs_infos where datepart = 20171129;
+
+面试比较难的sql语句：
+select A.username,A.month,max(A.salary) as salary,sum(B.salary) as accumulate
+from 
+(select username,month,sum(salary) as salary from t_consumer group by username,month) A 
+inner join 
+(select username,month,sum(salary) as salary from t_consumer group by username,month) B
+on
+A.username=B.username
+where B.month <= A.month
+group by A.username,A.month
+order by A.username,A.month;
+
+
+hadoop 退出安全模式：
+hadoop dfsadmin -safemode leave
+
+fdisk -l
+df -h
+
+
